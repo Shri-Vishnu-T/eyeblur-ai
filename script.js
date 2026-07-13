@@ -608,15 +608,18 @@ const MediaPipeManager = (() => {
 
 const EyeDetection = (() => {
   /**
-   * Convert normalized landmarks into pixel-space bounding info for one eye.
+   * Convert normalized landmarks into pixel-space bounding info covering
+   * BOTH eyes together (used to draw a single bar across both eyes).
    */
-  function computeEyeRegion(landmarks, indices, imageWidth, imageHeight) {
+  function computeCombinedEyeRegion(landmarks, imageWidth, imageHeight) {
     let minX = Infinity;
     let minY = Infinity;
     let maxX = -Infinity;
     let maxY = -Infinity;
 
-    for (const idx of indices) {
+    const allIndices = [...EYE_LANDMARK_INDICES.left, ...EYE_LANDMARK_INDICES.right];
+
+    for (const idx of allIndices) {
       const point = landmarks[idx];
       if (!point) continue;
       const x = point.x * imageWidth;
@@ -631,8 +634,13 @@ const EyeDetection = (() => {
 
     const width = maxX - minX;
     const height = maxY - minY;
-    const paddingX = width * CONFIG.BLUR_PADDING_RATIO;
-    const paddingY = height * CONFIG.BLUR_PADDING_RATIO + height * 0.3;
+
+    // Horizontal padding: small, since minX/maxX already span from
+    // outer-left-eye-corner to outer-right-eye-corner.
+    const paddingX = width * 0.12;
+    // Vertical padding: generous, so the bar fully covers both eyes
+    // top-to-bottom like a censor bar.
+    const paddingY = height * 0.9;
 
     return {
       x: minX - paddingX,
@@ -645,18 +653,15 @@ const EyeDetection = (() => {
   }
 
   /**
-   * Extract left/right eye regions for every detected face.
-   * Returns an array of { left, right } region objects.
+   * Extract one combined eye-bar region per detected face.
+   * Returns an array of region objects (one per face).
    */
   function extractEyeRegions(faceLandmarksList, imageWidth, imageHeight) {
     const regions = [];
 
     for (const landmarks of faceLandmarksList) {
-      const left = computeEyeRegion(landmarks, EYE_LANDMARK_INDICES.left, imageWidth, imageHeight);
-      const right = computeEyeRegion(landmarks, EYE_LANDMARK_INDICES.right, imageWidth, imageHeight);
-
-      if (left) regions.push(left);
-      if (right) regions.push(right);
+      const region = computeCombinedEyeRegion(landmarks, imageWidth, imageHeight);
+      if (region) regions.push(region);
     }
 
     return regions;
@@ -680,8 +685,8 @@ const BlurEngine = (() => {
   }
 
   /**
-   * Draw the source image onto a canvas, then blur only the supplied
-   * elliptical eye regions using clipped, filtered redraws.
+   * Draw the source image onto a canvas, then draw a solid black
+   * rectangle ("censor bar") over each supplied combined eye region.
    */
   function applyEyeBlur(sourceImage, imageWidth, imageHeight, regions) {
     const canvas = document.createElement("canvas");
@@ -695,34 +700,10 @@ const BlurEngine = (() => {
       return canvas;
     }
 
-    const blurRadius = computeBlurRadius(imageWidth, imageHeight);
-
     for (const region of regions) {
       ctx.save();
-
-      ctx.beginPath();
-      ctx.ellipse(
-        region.centerX,
-        region.centerY,
-        Math.max(region.width / 2, 1),
-        Math.max(region.height / 2, 1),
-        0,
-        0,
-        Math.PI * 2
-      );
-      ctx.clip();
-
-      ctx.filter = `blur(${blurRadius}px)`;
-
-      // Draw a slightly expanded source region so blur doesn't sample
-      // transparent/edge pixels from outside the canvas.
-      const drawPadding = blurRadius * 2;
-      const sx = Utils.clamp(region.centerX - region.width / 2 - drawPadding, 0, imageWidth);
-      const sy = Utils.clamp(region.centerY - region.height / 2 - drawPadding, 0, imageHeight);
-
-      ctx.drawImage(canvas, 0, 0, imageWidth, imageHeight);
-
-      ctx.filter = "none";
+      ctx.fillStyle = "#000000";
+      ctx.fillRect(region.x, region.y, region.width, region.height);
       ctx.restore();
     }
 
